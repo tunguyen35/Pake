@@ -4,6 +4,10 @@ on:
   repository_dispatch:
     types: [build-app]
 
+# Cấp quyền cho GitHub Actions tạo Release và upload file thành phẩm
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build ${{ github.event.client_payload.name }} (${{ matrix.os }})
@@ -22,27 +26,76 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      # ─── Build với Pake Action ───────────────────────────────────────────
-      - name: 🏗️ Build với Pake
-        id: pake
-        uses: tw93/Pake@v3
+      - name: 📁 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          url: ${{ github.event.client_payload.url }}
-          name: ${{ github.event.client_payload.name }}
-          icon: ${{ github.event.client_payload.icon }}
-          width: ${{ github.event.client_payload.width || 1200 }}
-          height: ${{ github.event.client_payload.height || 780 }}
-          output-dir: dist
+          node-version: 20
+
+      # Cài Rust - Động cơ cốt lõi của Tauri/Pake
+      - name: 🦀 Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Nếu build cho Linux (Ubuntu), phải cài thêm thư viện đồ họa hệ thống, không là lỗi ngay
+      - name: 📦 Install Linux Dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: 🚀 Install Pake CLI
+        run: npm install -g pake-cli
+
+      # TỰ ĐỘNG TẠO SCRIPT CHẶN QUẢNG CÁO NẾU USER BẬT TÍNH NĂNG
+      - name: 🛡️ Prepare Adblock Script
+        shell: bash
+        run: |
+          if [ "${{ github.event.client_payload.use_adblock }}" = "true" ]; then
+            echo 'setInterval(() => { 
+              // Chặn ads YouTube / Piped
+              document.querySelectorAll(".ad-showing, .ytd-ad-slot-renderer, #player-ads, .adsbygoogle").forEach(el => el.remove());
+              let skipBtn = document.querySelector(".ytp-ad-skip-button, .ytp-skip-ad-button");
+              if(skipBtn) skipBtn.click();
+              
+              // Chặn các banner quảng cáo rác nói chung
+              document.querySelectorAll("[id*=\"google_ads\"], [class*=\"adv-\"], .adsbygoogle").forEach(el => el.remove());
+            }, 500);' > adblock.js
+            echo "INJECT_FLAG=--inject ./adblock.js" >> $GITHUB_ENV
+            echo "✅ Đã bật tính năng chặn quảng cáo."
+          else
+            echo "// No adblock" > adblock.js
+            echo "INJECT_FLAG=" >> $GITHUB_ENV
+            echo "⚠️ Không bật chặn quảng cáo."
+          fi
+
+      # CHẠY LỆNH PAKE CLI THỰC TẾ (Thay thế cho Pake Action lỗi của Claude)
+      - name: 🏗️ Build với Pake CLI
+        shell: bash
+        run: |
+          mkdir dist
+          pake "${{ github.event.client_payload.url }}" \
+            --name "${{ github.event.client_payload.name }}" \
+            --icon "${{ github.event.client_payload.icon }}" \
+            --width ${{ github.event.client_payload.width || 1200 }} \
+            --height ${{ github.event.client_payload.height || 780 }} \
+            $INJECT_FLAG \
+            --output-dir dist
 
       # ─── Lấy tên file output ─────────────────────────────────────────────
       - name: 🔍 Tìm file output
         id: find_file
         shell: bash
         run: |
-          FILE=$(find dist -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) | head -1)
+          FILE=$(find dist -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" -o -name "*.msi" -o -name "*.app" \) | head -1)
+          if [ -z "$FILE" ]; then
+            echo "❌ Không tìm thấy file cài đặt nào được tạo ra!"
+            exit 1
+          fi
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "filename=$(basename $FILE)" >> $GITHUB_OUTPUT
-          echo "✅ File: $FILE"
+          echo "filename=$(basename "$FILE")" >> $GITHUB_OUTPUT
+          echo "✅ Đã tìm thấy file sản phẩm: $FILE"
 
       # ─── Upload lên GitHub Releases ──────────────────────────────────────
       - name: 🚀 Upload lên GitHub Release
@@ -53,13 +106,14 @@ jobs:
           body: |
             🌐 **URL:** ${{ github.event.client_payload.url }}
             📦 **Build ID:** `${{ github.event.client_payload.build_id }}`
-            🕐 **Built at:** ${{ github.event.client_payload.timestamp }}
+            🛡️ **Adblock:** `${{ github.event.client_payload.use_adblock }}`
           files: ${{ steps.find_file.outputs.file }}
           make_latest: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ─── Callback về Cloudflare Worker ───────────────────────────────────
+      # ─── Callback từng OS về Cloudflare Worker ───────────────────────────
       - name: 📡 Callback → Worker API
         if: always()
         shell: bash
@@ -68,7 +122,7 @@ jobs:
           STATUS="done"
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/build-${{ github.event.client_payload.build_id }}/${{ steps.find_file.outputs.filename }}"
 
-          if [ "${{ steps.find_file.outputs.file }}" = "" ]; then
+          if [ "${{ steps.find_file.outputs.file }}" = "" ] || [ "${{ steps.find_file.outcome }}" = "failure" ]; then
             STATUS="failed"
             DOWNLOAD_URL=""
           fi
@@ -84,7 +138,7 @@ jobs:
               \"download_url\": \"$DOWNLOAD_URL\"
             }"
 
-  # ─── Job notify nếu toàn bộ build xong ────────────────────────────────
+  # ─── Job báo hoàn thành tổng thể ───────────────────────────────────────
   notify_complete:
     name: ✅ Notify complete
     needs: build
