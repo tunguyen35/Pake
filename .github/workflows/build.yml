@@ -1,0 +1,104 @@
+name: 🔨 Build App
+
+on:
+  repository_dispatch:
+    types: [build-app]
+
+jobs:
+  build:
+    name: Build ${{ github.event.client_payload.name }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(github.event.client_payload.platforms) }}
+        include:
+          - os: windows-latest
+            artifact_ext: ".exe"
+          - os: macos-latest
+            artifact_ext: ".dmg"
+          - os: ubuntu-latest
+            artifact_ext: ".deb"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # ─── Build với Pake Action ───────────────────────────────────────────
+      - name: 🏗️ Build với Pake
+        id: pake
+        uses: tw93/Pake@v3
+        with:
+          url: ${{ github.event.client_payload.url }}
+          name: ${{ github.event.client_payload.name }}
+          icon: ${{ github.event.client_payload.icon }}
+          width: ${{ github.event.client_payload.width || 1200 }}
+          height: ${{ github.event.client_payload.height || 780 }}
+          output-dir: dist
+
+      # ─── Lấy tên file output ─────────────────────────────────────────────
+      - name: 🔍 Tìm file output
+        id: find_file
+        shell: bash
+        run: |
+          FILE=$(find dist -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) | head -1)
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+          echo "filename=$(basename $FILE)" >> $GITHUB_OUTPUT
+          echo "✅ File: $FILE"
+
+      # ─── Upload lên GitHub Releases ──────────────────────────────────────
+      - name: 🚀 Upload lên GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.event.client_payload.build_id }}
+          name: "${{ github.event.client_payload.name }} (build ${{ github.event.client_payload.build_id }})"
+          body: |
+            🌐 **URL:** ${{ github.event.client_payload.url }}
+            📦 **Build ID:** `${{ github.event.client_payload.build_id }}`
+            🕐 **Built at:** ${{ github.event.client_payload.timestamp }}
+          files: ${{ steps.find_file.outputs.file }}
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ─── Callback về Cloudflare Worker ───────────────────────────────────
+      - name: 📡 Callback → Worker API
+        if: always()
+        shell: bash
+        run: |
+          OS="${{ matrix.os }}"
+          STATUS="done"
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/build-${{ github.event.client_payload.build_id }}/${{ steps.find_file.outputs.filename }}"
+
+          if [ "${{ steps.find_file.outputs.file }}" = "" ]; then
+            STATUS="failed"
+            DOWNLOAD_URL=""
+          fi
+
+          curl -s -X POST "${{ secrets.WORKER_CALLBACK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+            -d "{
+              \"build_id\": \"${{ github.event.client_payload.build_id }}\",
+              \"status\": \"$STATUS\",
+              \"os\": \"$OS\",
+              \"filename\": \"${{ steps.find_file.outputs.filename }}\",
+              \"download_url\": \"$DOWNLOAD_URL\"
+            }"
+
+  # ─── Job notify nếu toàn bộ build xong ────────────────────────────────
+  notify_complete:
+    name: ✅ Notify complete
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 📡 Báo hoàn thành về Worker
+        run: |
+          RESULT="${{ needs.build.result }}"
+          curl -s -X POST "${{ secrets.WORKER_CALLBACK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+            -d "{
+              \"build_id\": \"${{ github.event.client_payload.build_id }}\",
+              \"status\": \"all_done\",
+              \"result\": \"$RESULT\"
+            }"
