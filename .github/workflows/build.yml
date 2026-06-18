@@ -1,4 +1,4 @@
-name: 🔨 Build App
+name: Pake App Builder
 
 on:
   repository_dispatch:
@@ -9,146 +9,83 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ github.event.client_payload.name }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJson(github.event.client_payload.platforms) }}
-        include:
-          - os: windows-latest
-            artifact_ext: ".exe"
-          - os: macos-latest
-            artifact_ext: ".dmg"
-          - os: ubuntu-latest
-            artifact_ext: ".deb"
-
-    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: 📁 Checkout Repository
+      - name: Checkout mã nguồn
         uses: actions/checkout@v4
 
-      - name: 🟢 Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: 📦 Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: latest
-
-      - name: 🦀 Setup Rust 1.85+
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.85.0"
-
-      - name: 📦 Install Linux Dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
-
-      - name: ⚡ Cache Rust & pnpm
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.pnpm-store
-          key: ${{ runner.os }}-pake-cache-${{ hashFiles('**/package.json') }}
-          restore-keys: ${{ runner.os }}-pake-cache-
-
-      - name: 🚀 Install Pake CLI
-        run: pnpm add -g pake-cli
-
-      - name: 🛡️ Prepare Adblock Script
+      - name: Đọc dữ liệu Payload đầu vào
         shell: bash
         run: |
-          if [ "${{ github.event.client_payload.use_adblock }}" = "true" ]; then
-            echo 'console.log("[Pake] Adblock injected");' > adblock.js
-            echo "INJECT_FLAG=--inject ./adblock.js" >> $GITHUB_ENV
-          else
-            echo "INJECT_FLAG=" >> $GITHUB_ENV
-          fi
+          echo "BUILD_ID=${{ github.event.client_payload.build_id }}" >> $GITHUB_ENV
+          echo "APP_URL=${{ github.event.client_payload.url }}" >> $GITHUB_ENV
+          echo "APP_NAME=${{ github.event.client_payload.name }}" >> $GITHUB_ENV
 
-      - name: 🏗️ Build with Pake CLI
-        shell: bash
-        run: |
-          BUILD_CMD="pake \"${{ github.event.client_payload.url }}\" --name \"${{ github.event.client_payload.name }}\""
-          [ -n "${{ github.event.client_payload.icon }}" ] && BUILD_CMD="$BUILD_CMD --icon \"${{ github.event.client_payload.icon }}\""
-          BUILD_CMD="$BUILD_CMD --width ${{ github.event.client_payload.width || 1200 }} --height ${{ github.event.client_payload.height || 780 }}"
-          [ -n "$INJECT_FLAG" ] && BUILD_CMD="$BUILD_CMD $INJECT_FLAG"
-          eval $BUILD_CMD
+      - name: Build với Pake
+        id: pake
+        uses: tw93/Pake@v3
+        with:
+          url: ${{ env.APP_URL }}
+          name: ${{ env.APP_NAME }}
+          icon: ${{ github.event.client_payload.icon }}
+          width: ${{ github.event.client_payload.width || 1200 }}
+          height: ${{ github.event.client_payload.height || 780 }}
+          output-dir: dist
 
-      - name: 🔍 Find Output File
+      - name: Tìm file output
         id: find_file
         shell: bash
         run: |
-          FILE=$(find dist -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) | sort | head -1)
-          if [ -z "$FILE" ]; then
-            echo "❌ Không tìm thấy file sản phẩm trong dist/"
-            ls -R dist || true
-            exit 1
-          fi
+          FILE=$(find dist -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) | head -1)
           echo "file=$FILE" >> $GITHUB_OUTPUT
           echo "filename=$(basename "$FILE")" >> $GITHUB_OUTPUT
-          echo "✅ Found: $FILE"
+          echo "✅ File: $FILE"
 
-      - name: 🚀 Upload to GitHub Release
+      - name: Phát hành lên GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.event.client_payload.build_id }}
-          name: "${{ github.event.client_payload.name }} (${{ matrix.os }})"
-          body: |
-            🌐 **URL:** ${{ github.event.client_payload.url }}
-            📦 **Build ID:** `${{ github.event.client_payload.build_id }}`
-            🛡️ **Adblock:** `${{ github.event.client_payload.use_adblock }}`
+          tag_name: build-${{ env.BUILD_ID }}
+          name: "${{ env.APP_NAME }} (build ${{ env.BUILD_ID }})"
           files: ${{ steps.find_file.outputs.file }}
           make_latest: false
-          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 📡 Callback → Worker API
+      - name: Gửi phản hồi về Worker Webhook
         if: always()
         shell: bash
         run: |
-          OS="${{ matrix.os }}"
-          STATUS="done"
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/build-${{ github.event.client_payload.build_id }}/${{ steps.find_file.outputs.filename }}"
+          STATUS="${{ job.status }}"
+          BASE_URL="${{ secrets.WORKER_CALLBACK_URL }}"
+          BASE_URL="${BASE_URL%/}"
+          DOWNLOAD_URL=""
 
-          if [ "${{ steps.find_file.outcome }}" != "success" ] || [ -z "${{ steps.find_file.outputs.file }}" ]; then
+          if [ "$STATUS" = "success" ] && [ -n "${{ steps.find_file.outputs.filename }}" ]; then
+            DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/build-${{ env.BUILD_ID }}/${{ steps.find_file.outputs.filename }}"
+          else
             STATUS="failed"
-            DOWNLOAD_URL=""
           fi
 
-          curl -s -X POST "${{ secrets.WORKER_CALLBACK_URL }}" \
+          curl -s -X POST "$BASE_URL" \
             -H "Content-Type: application/json" \
             -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
-            -d "{
-              \"build_id\": \"${{ github.event.client_payload.build_id }}\",
-              \"status\": \"$STATUS\",
-              \"os\": \"$OS\",
-              \"filename\": \"${{ steps.find_file.outputs.filename }}\",
-              \"download_url\": \"$DOWNLOAD_URL\"
-            }"
+            -d "{\"build_id\": \"${{ env.BUILD_ID }}\", \"status\": \"$STATUS\", \"os\": \"${{ matrix.os }}\", \"filename\": \"${{ steps.find_file.outputs.filename }}\", \"download_url\": \"$DOWNLOAD_URL\"}"
 
   notify_complete:
-    name: ✅ Notify Complete
+    name: Notify complete
     needs: build
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: 📡 Report Final Status
+      - name: Báo hoàn thành về Worker
+        shell: bash
         run: |
-          RESULT="${{ needs.build.result }}"
           curl -s -X POST "${{ secrets.WORKER_CALLBACK_URL }}" \
             -H "Content-Type: application/json" \
             -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
-            -d "{
-              \"build_id\": \"${{ github.event.client_payload.build_id }}\",
-              \"status\": \"all_done\",
-              \"result\": \"$RESULT\"
-            }"
+            -d "{\"build_id\": \"${{ github.event.client_payload.build_id }}\", \"status\": \"all_done\", \"result\": \"${{ needs.build.result }}\"}"
