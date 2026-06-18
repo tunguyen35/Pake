@@ -73,7 +73,8 @@ jobs:
         id: find_file
         shell: bash
         run: |
-          FILE=$(find . -maxdepth 2 -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) | head -1)
+          echo "📂 Tìm tất cả file exe/msi/dmg/deb/AppImage:"
+          FILE=$(find . -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) 2>/dev/null | grep -v "node_modules/.*\.exe$" | head -1)
           echo "file=$FILE" >> $GITHUB_OUTPUT
           echo "filename=$(basename "$FILE")" >> $GITHUB_OUTPUT
           echo "✅ File: $FILE"
