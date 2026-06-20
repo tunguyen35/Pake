@@ -39,17 +39,12 @@ jobs:
           workspaces: "src-tauri -> target"
           key: ${{ runner.os }}-pake-v1
 
-      # ─── Cài môi trường Node.js & pnpm Cache ────────────────────────────
+      # ─── Cài môi trường Node.js ────────────────────────────────────────────
       - name: Cài đặt Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: 'pnpm'  # ✅ FIX: Pnpm cache (repo dùng pnpm, không npm)
-
-      - name: Cài đặt pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: latest
+          # Không cần cache vì chỉ dùng npx pake-cli, không dùng pnpm dependencies
 
       # ─── Cài dependencies cho Linux ────────────────────────────────────────
       - name: Cài thư viện hệ thống (Linux)
