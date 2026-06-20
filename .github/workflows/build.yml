@@ -29,33 +29,37 @@ jobs:
           echo "APP_WIDTH=${{ github.event.client_payload.width || 1200 }}" >> $GITHUB_ENV
           echo "APP_HEIGHT=${{ github.event.client_payload.height || 780 }}" >> $GITHUB_ENV
 
-      # ─── Cài môi trường Rust & Cache (Ăn tiền ở đây) ──────────────────────
+      # ─── Cài môi trường Rust & Cache (Tối ưu build time) ──────────────────
       - name: Cài đặt Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          # Thêm cấu hình này để cache cả phần build của Pake CLI toàn diện hơn
+          workspaces: "src-tauri -> target"
           key: ${{ runner.os }}-pake-v1
 
-      # ─── Cài môi trường Node.js & Cache npm ngon lành ─────────────────────
+      # ─── Cài môi trường Node.js & pnpm Cache ────────────────────────────
       - name: Cài đặt Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: 'npm' # Bật cache mặc định của setup-node
+          cache: 'pnpm'  # ✅ FIX: Pnpm cache (repo dùng pnpm, không npm)
 
-      # ─── Cài dependencies cho Linux (Dùng apt-fast nếu muốn nhanh hơn, hoặc tối ưu apt) ───
+      - name: Cài đặt pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: latest
+
+      # ─── Cài dependencies cho Linux ────────────────────────────────────────
       - name: Cài thư viện hệ thống (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      # ─── Mẹo tối ưu: Cài thẳng bằng npx thay vì cài Global ───────────────
-      # Dùng npx thì GitHub Actions sẽ lôi từ bộ cache của npm ra chạy, đéo phải tải lại từ đầu nữa!
-      - name: Build App với Pake CLI (Dùng NPX để ăn cache)
+      # ─── Tối ưu: Dùng npx để tận dụng cache ────────────────────────────────
+      - name: Build App với Pake CLI
         shell: bash
         run: |
           ICON_ARG=""
@@ -63,7 +67,6 @@ jobs:
             ICON_ARG="--icon ${{ env.APP_ICON }}"
           fi
 
-          # Gọi thẳng qua npx để tận dụng cache npm của hệ thống
           npx --yes pake-cli "${{ env.APP_URL }}" \
             --name "${{ env.APP_NAME }}" \
             --width ${{ env.APP_WIDTH }} \
