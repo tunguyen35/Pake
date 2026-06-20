@@ -53,7 +53,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      # ─── Tối ưu: Dùng npx để tận dụng cache ────────────────────────────────
+      # ─── Cài pake-cli global & Build ──────────────────────────────────────
+      - name: Cài đặt pake-cli
+        run: npm install -g pake-cli
+
       - name: Build App với Pake CLI
         shell: bash
         run: |
@@ -62,7 +65,7 @@ jobs:
             ICON_ARG="--icon ${{ env.APP_ICON }}"
           fi
 
-          npx --yes pake-cli "${{ env.APP_URL }}" \
+          pake "${{ env.APP_URL }}" \
             --name "${{ env.APP_NAME }}" \
             --width ${{ env.APP_WIDTH }} \
             --height ${{ env.APP_HEIGHT }} \
